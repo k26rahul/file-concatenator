@@ -150,10 +150,46 @@
                     const items = e.dataTransfer.items;
                     if (!items) return;
 
+                    const selectionState = {};
+                    const collectSelections = (nodes) => {
+                        for (const node of nodes) {
+                            if (node.isDirectory) {
+                                collectSelections(node.children);
+                            } else {
+                                selectionState[node.path] = node.selected;
+                            }
+                        }
+                    };
+                    collectSelections(this.nodes);
+                    this._tempSelectionState = selectionState;
+                    this.nodes = [];
+
                     const allowed = ['md', 'js', 'py', 'txt', 'html', 'css', 'json', 'csv', 'yaml', 'yml', 'sh', 'bat', 'ps1', 'xml', 'log', 'ts', 'tsx', 'jsx', 'vue', 'java', 'c', 'cpp', 'h', 'cs', 'php', 'rb', 'go', 'rs', 'swift', 'kt'];
 
                     const processEntry = (entry, path = '') => {
                         return new Promise((resolve) => {
+                            const name = entry.name.toLowerCase();
+                            const ignoredDirs = [
+                                'node_modules', 'node-modules',
+                                '.git', '.github', '.vscode', '.idea', '.settings',
+                                'venv', '.venv', 'env', '.env.local',
+                                'dist', 'build', 'out', 'target', 'bin', 'obj',
+                                'coverage', '.next', '.nuxt', '.cache', '__pycache__'
+                            ];
+                            const ignoredFiles = [
+                                '.ds_store', 'thumbs.db',
+                                'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'bun.lockb'
+                            ];
+
+                            if (entry.isDirectory && ignoredDirs.includes(name)) {
+                                resolve();
+                                return;
+                            }
+                            if (entry.isFile && ignoredFiles.includes(name)) {
+                                resolve();
+                                return;
+                            }
+
                             if (entry.isFile) {
                                 entry.file(async (file) => {
                                     const fullPath = path + file.name;
@@ -214,6 +250,7 @@
                     }
                     
                     await Promise.all(promises);
+                    this._tempSelectionState = null;
                     this.recalculateRootState();
                     this.save();
                 },
@@ -236,6 +273,9 @@
                         } else {
                             child.content = content;
                             child.path = fullPath;
+                            if (this._tempSelectionState && this._tempSelectionState.hasOwnProperty(fullPath)) {
+                                child.selected = this._tempSelectionState[fullPath];
+                            }
                         }
                         tree.push(child);
                     }
