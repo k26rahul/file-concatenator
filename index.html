@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Minimal File Concatenator</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        html, body { height: 100%; margin: 0; }
+        #app { min-height: 100%; padding: 20px; }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <div class="container-fluid">
+            <h5>File Concatenator</h5>
+            <p class="text-muted">Drag and drop files or folders anywhere on this page.</p>
+            
+            <div class="mb-3">
+                <textarea class="form-control" v-model="customMessage" @input="save" placeholder="Custom message to append at the end..." rows="3"></textarea>
+            </div>
+            
+            <div class="mb-3">
+                <button class="btn btn-sm btn-primary me-2" @click="copyContent">Copy Concatenated</button>
+                <button class="btn btn-sm btn-warning" @click="clearStorage">Clear All</button>
+            </div>
+            
+            <div v-if="nodes.length > 0">
+                <div class="form-check mb-2">
+                    <input class="form-check-input" type="checkbox" id="selectAll" 
+                           :checked="isAllSelected"
+                           :indeterminate.prop="isIndeterminate"
+                           @change="toggleSelectAll($event.target.checked)">
+                    <label class="form-check-label fw-bold" for="selectAll">Select All</label>
+                </div>
+                <hr>
+                
+                <tree-node v-for="(node, index) in nodes" 
+                           :key="index" 
+                           :node="node"
+                           @update-parent="recalculateRootState">
+                </tree-node>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tree Node Template -->
+    <template id="tree-node-template">
+        <div class="tree-node">
+            <div class="d-flex align-items-center mb-1">
+                <span v-if="node.isDirectory" 
+                      @click="toggleOpen" 
+                      style="cursor: pointer; width: 20px; text-align: center; display: inline-block;">
+                    {{ node.isOpen ? '▼' : '▶' }}
+                </span>
+                <span v-else style="width: 20px; display: inline-block;"></span>
+                
+                <input type="checkbox" class="form-check-input mt-0 me-2"
+                       :checked="node.selected"
+                       :indeterminate.prop="node.indeterminate"
+                       @change="onCheckChange($event.target.checked)">
+                
+                <span class="text-break">{{ node.name }}</span>
+            </div>
+            
+            <div v-if="node.isDirectory && node.isOpen" class="ms-4">
+                <tree-node v-for="(child, index) in node.children" 
+                           :key="index" 
+                           :node="child"
+                           @update-parent="onChildUpdate">
+                </tree-node>
+            </div>
+        </div>
+    </template>
+
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script>
+        const { createApp } = Vue;
+
+        const TreeNode = {
+            name: 'tree-node',
+            template: '#tree-node-template',
+            props: {
+                node: Object
+            },
+            methods: {
+                toggleOpen() {
+                    this.node.isOpen = !this.node.isOpen;
+                },
+                onCheckChange(checked) {
+                    this.node.selected = checked;
+                    this.node.indeterminate = false;
+                    if (this.node.isDirectory) {
+                        this.setAllChildren(this.node, checked);
+                    }
+                    this.$emit('update-parent');
+                },
+                setAllChildren(node, state) {
+                    if (node.children) {
+                        node.children.forEach(child => {
+                            child.selected = state;
+                            child.indeterminate = false;
+                            this.setAllChildren(child, state);
+                        });
+                    }
+                },
+                onChildUpdate() {
+                    if (!this.node.isDirectory) return;
+                    
+                    const allSelected = this.node.children.length > 0 && this.node.children.every(c => c.selected);
+                    const noneSelected = this.node.children.length > 0 && this.node.children.every(c => !c.selected && !c.indeterminate);
+                    
+                    if (allSelected) {
+                        this.node.selected = true;
+                        this.node.indeterminate = false;
+                    } else if (noneSelected) {
+                        this.node.selected = false;
+                        this.node.indeterminate = false;
+                    } else {
+                        this.node.selected = false;
+                        this.node.indeterminate = true;
+                    }
+                    
+                    this.$emit('update-parent');
+                }
+            }
+        };
+
+        const app = createApp({
+            data() {
+                return {
+                    nodes: [],
+                    customMessage: '',
+                    isAllSelected: false,
+                    isIndeterminate: false
+                }
+            },
+            mounted() {
+                this.load();
+                window.addEventListener('dragenter', e => e.preventDefault());
+                window.addEventListener('dragover', e => e.preventDefault());
+                window.addEventListener('dragleave', e => e.preventDefault());
+                window.addEventListener('drop', e => {
+                    e.preventDefault();
+                    this.handleDrop(e);
+                });
+            },
+            methods: {
+                async handleDrop(e) {
+                    const items = e.dataTransfer.items;
+                    if (!items) return;
+
+                    const allowed = ['md', 'js', 'py', 'txt', 'html', 'css', 'json', 'csv', 'yaml', 'yml', 'sh', 'bat', 'ps1', 'xml', 'log', 'ts', 'tsx', 'jsx', 'vue', 'java', 'c', 'cpp', 'h', 'cs', 'php', 'rb', 'go', 'rs', 'swift', 'kt'];
+
+                    const processEntry = (entry, path = '') => {
+                        return new Promise((resolve) => {
+                            if (entry.isFile) {
+                                entry.file(async (file) => {
+                                    const fullPath = path + file.name;
+                                    const isAllowed = fullPath.endsWith('.gitignore') || fullPath.endsWith('.env') || 
+                                        (fullPath.includes('.') && allowed.includes(fullPath.split('.').pop().toLowerCase()));
+                                    
+                                    if (isAllowed) {
+                                        try {
+                                            const text = await file.text();
+                                            this.addNodeToTree(this.nodes, fullPath.split('/'), text, fullPath);
+                                        } catch (err) {
+                                            console.error("Failed to read", fullPath, err);
+                                        }
+                                    }
+                                    resolve();
+                                });
+                            } else if (entry.isDirectory) {
+                                const dirReader = entry.createReader();
+                                const readAllEntries = async () => {
+                                    let allEntries = [];
+                                    const readBatch = () => {
+                                        return new Promise((res) => {
+                                            dirReader.readEntries((entries) => {
+                                                res(entries.length === 0 ? [] : entries);
+                                            });
+                                        });
+                                    };
+                                    
+                                    let hasMore = true;
+                                    while (hasMore) {
+                                        const batch = await readBatch();
+                                        if (batch.length === 0) {
+                                            hasMore = false;
+                                        } else {
+                                            allEntries = allEntries.concat(batch);
+                                        }
+                                    }
+                                    
+                                    for (const childEntry of allEntries) {
+                                        await processEntry(childEntry, path + entry.name + '/');
+                                    }
+                                    resolve();
+                                };
+                                readAllEntries();
+                            } else {
+                                resolve();
+                            }
+                        });
+                    };
+
+                    const promises = [];
+                    for (let i = 0; i < items.length; i++) {
+                        const item = items[i];
+                        if (item.kind === 'file') {
+                            const entry = item.webkitGetAsEntry();
+                            if (entry) promises.push(processEntry(entry));
+                        }
+                    }
+                    
+                    await Promise.all(promises);
+                    this.recalculateRootState();
+                    this.save();
+                },
+                addNodeToTree(tree, pathParts, content, fullPath) {
+                    const part = pathParts[0];
+                    const isFile = pathParts.length === 1;
+                    
+                    let child = tree.find(n => n.name === part);
+                    
+                    if (!child) {
+                        child = {
+                            name: part,
+                            isDirectory: !isFile,
+                            selected: true,
+                            indeterminate: false,
+                        };
+                        if (!isFile) {
+                            child.isOpen = true;
+                            child.children = [];
+                        } else {
+                            child.content = content;
+                            child.path = fullPath;
+                        }
+                        tree.push(child);
+                    }
+                    
+                    if (!isFile) {
+                        this.addNodeToTree(child.children, pathParts.slice(1), content, fullPath);
+                        
+                        const allSel = child.children.length > 0 && child.children.every(c => c.selected);
+                        const noneSel = child.children.length > 0 && child.children.every(c => !c.selected && !c.indeterminate);
+                        if (allSel) { child.selected = true; child.indeterminate = false; }
+                        else if (noneSel) { child.selected = false; child.indeterminate = false; }
+                        else { child.selected = false; child.indeterminate = true; }
+                    }
+                },
+                toggleSelectAll(checked) {
+                    this.nodes.forEach(node => {
+                        node.selected = checked;
+                        node.indeterminate = false;
+                        this.setAllChildren(node, checked);
+                    });
+                    this.recalculateRootState();
+                    this.save();
+                },
+                setAllChildren(node, state) {
+                    if (node.children) {
+                        node.children.forEach(child => {
+                            child.selected = state;
+                            child.indeterminate = false;
+                            this.setAllChildren(child, state);
+                        });
+                    }
+                },
+                recalculateRootState() {
+                    const allSelected = this.nodes.length > 0 && this.nodes.every(c => c.selected);
+                    const noneSelected = this.nodes.length > 0 && this.nodes.every(c => !c.selected && !c.indeterminate);
+                    
+                    if (allSelected) {
+                        this.isAllSelected = true;
+                        this.isIndeterminate = false;
+                    } else if (noneSelected) {
+                        this.isAllSelected = false;
+                        this.isIndeterminate = false;
+                    } else {
+                        this.isAllSelected = false;
+                        this.isIndeterminate = true;
+                    }
+                    this.save();
+                },
+
+                clearStorage() {
+                    if (confirm("Are you sure you want to clear all files and data?")) {
+                        this.nodes = [];
+                        this.customMessage = '';
+                        this.recalculateRootState();
+                        localStorage.removeItem('fileConcatData');
+                    }
+                },
+                copyContent() {
+                    let output = [];
+                    this.collectFiles(this.nodes, output);
+                    
+                    if (output.length === 0 && !this.customMessage) {
+                        alert('Nothing to copy.');
+                        return;
+                    }
+                    
+                    let finalStr = output.join('\n');
+                    if (this.customMessage) {
+                        finalStr += `\n${this.customMessage}`;
+                    }
+                    
+                    navigator.clipboard.writeText(finalStr).then(() => {
+                        alert('Copied to clipboard!');
+                    }).catch(err => {
+                        alert('Failed to copy: ' + err);
+                    });
+                },
+                collectFiles(nodes, outputArray) {
+                    for (const node of nodes) {
+                        if (node.isDirectory) {
+                            if (node.selected || node.indeterminate) {
+                                this.collectFiles(node.children, outputArray);
+                            }
+                        } else {
+                            if (node.selected) {
+                                outputArray.push(`==========\nFILE: ${node.path}\n==========\n${node.content}\n`);
+                            }
+                        }
+                    }
+                },
+                save() {
+                    try {
+                        localStorage.setItem('fileConcatData', JSON.stringify({
+                            nodes: this.nodes,
+                            customMessage: this.customMessage
+                        }));
+                    } catch (e) {
+                        console.error('Failed to save to local storage', e);
+                    }
+                },
+                load() {
+                    try {
+                        const data = JSON.parse(localStorage.getItem('fileConcatData'));
+                        if (data) {
+                            this.nodes = data.nodes || [];
+                            this.customMessage = data.customMessage || '';
+                            this.recalculateRootState();
+                        }
+                    } catch (e) {
+                        console.error('Failed to load from local storage', e);
+                    }
+                }
+            }
+        });
+
+        app.component('tree-node', TreeNode);
+        app.mount('#app');
+    </script>
+</body>
+</html>
